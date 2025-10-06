@@ -1,9 +1,17 @@
-# retoc
+# retoc-sb
 
 CLI tool for packing/unpacking Unreal Engine IoStore containers (.utoc/.ucas) as
 well as converting between Zen assets and Legacy assets (found in .pak containers).
 
+### Stellar Blade modding fork
+
+Forked for usage in Stellar Blade modding. Contains additions from
+[BlafKing's](https://github.com/BlafKing) retoc [fork](https://github.com/BlafKing/retoc),
+plus a few additions of my own in order to expose a library interface
+for use in other projects.
+
 ## cli
+
 ```console
 $ retoc --help
 Usage: retoc [OPTIONS] <COMMAND>
@@ -23,6 +31,7 @@ Options:
 ```
 
 ### to-legacy
+
 ```console
 $ ls AbioticFactor/Content/Paks
 global.ucas
@@ -41,6 +50,7 @@ Extracted 2 shader code libraries to "legacy_P.pak"
 ```
 
 ### to-zen
+
 ```console
 $ retoc to-zen legacy_P.pak iostore.utoc --version UE5_4
 converting shader library "AbioticFactor/Content/ShaderArchive-AbioticFactor_Chunk0-PCD3D_SM5-PCD3D_SM5.ushaderbytecode"
@@ -58,11 +68,13 @@ iostore.pak
 ```
 
 ## compatibility
+
 Unreal Engine versions 5.3+ are well supported and can convert entire games to
 .pak and have them run without issue. Lack of dependency information in versions
 prior to 5.3 may result in games failing to load a handful of assets, preventing
 them from running from .pak, but should not be an issue for modding purposes.
 
 ## credits
+
 - [Archengius](https://github.com/Archengius): writing all of the asset conversion code
 - [LongerWarrior](https://github.com/LongerWarrior): debugging complex conversion issues and testing against many games
