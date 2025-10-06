@@ -12,16 +12,16 @@ mod name_map;
 mod script_objects;
 mod ser;
 mod shader_library;
+mod verse_vm_types;
 mod version;
 mod version_heuristics;
 mod zen;
 mod zen_asset_conversion;
-mod verse_vm_types;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bitflags::bitflags;
 use clap::Parser;
-use compression::{decompress, CompressionMethod};
+use compression::{CompressionMethod, decompress};
 use container_header::StoreEntry;
 use file_pool::FilePool;
 use fs_err as fs;
@@ -40,8 +40,8 @@ use std::ffi::OsStr;
 use std::fmt::{Debug, Display, Formatter};
 use std::io::BufWriter;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
     io::{BufReader, Cursor, Read, Seek, SeekFrom, Write},
@@ -54,19 +54,37 @@ use tracing::instrument;
 use version::EngineVersion;
 use zen_asset_conversion::ConvertedZenAssetBundle;
 
-use name_map::{write_name_batch_parts, EMappedNameType, FNameMap};
+use name_map::{EMappedNameType, FNameMap, write_name_batch_parts};
 use script_objects::{FPackageObjectIndex, FScriptObjectEntry};
 
 #[derive(Parser, Debug)]
 struct ActionManifest {
     #[arg(index = 1)]
     utoc: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
 struct ActionInfo {
     #[arg(index = 1)]
     path: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -92,6 +110,15 @@ struct ActionList {
     /// Show package store entry
     #[arg(long)]
     store: bool,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -116,6 +143,15 @@ struct ActionUnpackRaw {
     utoc: PathBuf,
     #[arg(index = 2)]
     output: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -139,6 +175,18 @@ struct ActionToLegacy {
     #[arg(short, long)]
     filter: Vec<String>,
 
+    /// .utoc file name filter
+    #[arg(long)]
+    file_filter: Vec<String>,
+
+    /// Check any sub folders in the input directory
+    #[arg(long)]
+    check_subdirs: bool,
+
+    /// A folder from which .utoc files are only mounted so that chunks can be resolved
+    #[arg(long)]
+    mount_dir: Option<PathBuf>,
+
     /// Skip conversion of assets
     #[arg(long)]
     no_assets: bool,
@@ -151,6 +199,9 @@ struct ActionToLegacy {
     /// Skip compression of shader libraries
     #[arg(long)]
     no_compres_shaders: bool,
+    /// Skip version/header compatibility checks between containers
+    #[arg(long)]
+    no_ver_check: bool,
     /// Do not output any files (dry run). Useful for testing conversion
     #[arg(short, long)]
     dry_run: bool,
@@ -218,6 +269,15 @@ struct ActionGet {
     /// Optional output path or stdout if "-" or omitted
     #[arg(index = 3)]
     output: Option<PathBuf>,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -228,6 +288,15 @@ struct ActionDumpTest {
     output_dir: PathBuf,
     #[arg(index = 3)]
     package_id: FPackageId,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -248,6 +317,15 @@ struct ActionPrintScriptObjects {
     /// Input .utoc file containing script objects
     #[arg(index = 1)]
     input: PathBuf,
+
+    #[arg(long)]
+    no_ver_check: bool,
+
+    #[arg(long)]
+    check_subdirs: bool,
+
+    #[arg(long)]
+    mount_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -337,7 +415,12 @@ fn main() -> Result<()> {
 }
 
 fn action_manifest(args: ActionManifest, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
 
     let entries = Arc::new(Mutex::new(vec![]));
 
@@ -387,13 +470,23 @@ fn action_manifest(args: ActionManifest, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_info(args: ActionInfo, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.path, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.path, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
     iostore.print_info(0);
     Ok(())
 }
 
 fn action_list(args: ActionList, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
 
     let chunks = if args.all { iostore.chunks_all() } else { iostore.chunks() };
 
@@ -587,7 +680,12 @@ mod raw {
 }
 
 fn action_unpack_raw(args: ActionUnpackRaw, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.utoc, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.utoc, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
 
     let output = args.output;
     let chunks_dir = output.join("chunks");
@@ -788,7 +886,14 @@ fn action_to_legacy(args: ActionToLegacy, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_to_legacy_inner(args: ActionToLegacy, config: Arc<Config>, file_writer: &dyn FileWriterTrait, log: &Log) -> Result<()> {
-    let iostore = iostore::open(&args.input, config.clone())?;
+    let mut extra_mounts = vec![];
+    if let Some(mount_dir) = &args.mount_dir {
+        if mount_dir.exists() {
+            extra_mounts.push(mount_dir.clone());
+        }
+    }
+
+    let iostore: Box<dyn IoStoreTrait + 'static> = iostore::open(&args.input, config.clone(), args.no_ver_check, args.check_subdirs, &extra_mounts)?;
     if !args.no_assets {
         action_to_legacy_assets(&args, file_writer, &*iostore, log)?;
     }
@@ -808,6 +913,10 @@ fn progress_style() -> indicatif::ProgressStyle {
     indicatif::ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {wide_msg}").unwrap().progress_chars("##-")
 }
 
+fn normalize(path: &Path) -> PathBuf {
+    path.components().collect()
+}
+
 fn build_verse_cell_store(script_cells: &Vec<VerseScriptCell>) -> Arc<ZenScriptCellsStore> {
     let mut mutable_cell_store = ZenScriptCellsStore::create_empty();
     mutable_cell_store.add_vm_intrinsics();
@@ -821,8 +930,31 @@ fn action_to_legacy_assets(args: &ActionToLegacy, file_writer: &dyn FileWriterTr
     let mut packages_to_extract = vec![];
     for package_info in iostore.packages() {
         let chunk_id = FIoChunkId::from_package_id(package_info.id(), 0, EIoChunkType::ExportBundleData);
+
+        // Determine the container (file) path
+        let container_path: PathBuf = iostore.chunk_container_path(chunk_id).with_context(|| format!("{:?} is not in any container", package_info.id()))?;
+
+        let container_path_str = container_path.to_string_lossy();
+        let container_path_norm = normalize(&container_path);
+        if let Some(mount_dir) = &args.mount_dir {
+            let mount_dir_norm = normalize(mount_dir);
+
+            if container_path_norm.starts_with(&mount_dir) {
+                let relative_path = container_path_norm.strip_prefix(&mount_dir_norm).unwrap();
+                if relative_path.components().count() == 1 {
+                    continue;
+                }
+            }
+        }
+        // NEW: Filter based on container file path (e.g. mod_P.utoc)
+        if !args.file_filter.is_empty() && !args.file_filter.iter().any(|f| container_path_str.contains(f)) {
+            continue;
+        }
+
+        // Get virtual asset path (e.g. /Game/FX/BP/BP_FloatingBall_01.uasset)
         let package_path = iostore.chunk_path(chunk_id).with_context(|| format!("{:?} has no path name entry. Cannot extract", package_info.id()))?;
 
+        // Original asset name filter (e.g. BP_FloatingBall_01)
         if !args.filter.is_empty() && !args.filter.iter().any(|f| package_path.contains(f)) {
             continue;
         }
@@ -991,8 +1123,17 @@ fn action_to_zen(args: ActionToZen, config: Arc<Config>) -> Result<()> {
                 memory_mapped_bulk_data_buffer: input.read_opt(&path.with_extension("m.ubulk"))?,
             };
 
-            let converted = zen_asset_conversion::build_zen_asset(bundle, &package_name_to_referenced_shader_maps, &mount_point.join(path),
-                Some(args.version.package_file_version()), container_header_version, needs_asset_import_fixup, script_objects.clone(), Some(script_cell_store.clone()), &log)?;
+            let converted = zen_asset_conversion::build_zen_asset(
+                bundle,
+                &package_name_to_referenced_shader_maps,
+                &mount_point.join(path),
+                Some(args.version.package_file_version()),
+                container_header_version,
+                needs_asset_import_fixup,
+                script_objects.clone(),
+                Some(script_cell_store.clone()),
+                &log,
+            )?;
 
             tx.send(converted)?;
 
@@ -1069,7 +1210,12 @@ fn action_to_zen(args: ActionToZen, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_get(args: ActionGet, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.input, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.input, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
     let data = iostore.read_raw(args.chunk_id)?;
 
     let mut output: Box<dyn Write> = if let Some(output) = args.output {
@@ -1083,7 +1229,12 @@ fn action_get(args: ActionGet, config: Arc<Config>) -> Result<()> {
 }
 
 fn action_dump_test(args: ActionDumpTest, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.input, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    let iostore = iostore::open(args.input, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
 
     let chunk_id = FIoChunkId::from_package_id(args.package_id, 0, EIoChunkType::ExportBundleData);
     let game_path = iostore.chunk_path(chunk_id).context("no path found for package")?;
@@ -1212,7 +1363,13 @@ fn action_gen_script_objects(args: ActionGenScriptObjects, _config: Arc<Config>)
 }
 
 fn action_print_script_objects(args: ActionPrintScriptObjects, config: Arc<Config>) -> Result<()> {
-    let iostore = iostore::open(args.input, config)?;
+    let mut extra_mounts = vec![];
+    if args.mount_dir.exists() {
+        extra_mounts.push(args.mount_dir.clone());
+    }
+
+    // TODO(tuokri): do we really need to touch this in this SB fork?
+    let iostore = iostore::open(args.input, config, args.no_ver_check, args.check_subdirs, &extra_mounts)?;
     let script_objects = iostore.load_script_objects()?;
     script_objects.print();
     Ok(())
@@ -1247,7 +1404,7 @@ impl std::str::FromStr for AesKey {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use aes::cipher::KeyInit;
-        use base64::{engine::general_purpose, Engine as _};
+        use base64::{Engine as _, engine::general_purpose};
         let try_parse = |bytes: Vec<_>| aes::Aes256::new_from_slice(&bytes).ok().map(AesKey);
         hex::decode(s.strip_prefix("0x").unwrap_or(s))
             .ok()

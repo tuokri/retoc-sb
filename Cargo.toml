@@ -45,7 +45,16 @@ strum = { version = "0.26.3", features = ["derive"] }
 tracing = "0.1.41"
 typed-path = "0.10.0"
 ue_reflection = { git = "https://github.com/trumank/meatloaf.git", version = "0.1.0" }
+walkdir = "2.5.0"
 zstd = "0.13.3"
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+
+[lib]
+name = "retoc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "retoc"
+path = "src/main.rs"
