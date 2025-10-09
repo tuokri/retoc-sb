@@ -54,7 +54,6 @@ pretty_assertions = "1.4.1"
 [lib]
 name = "retoc"
 path = "src/lib.rs"
-crate-type = ["lib", "staticlib"]
 
 [[bin]]
 name = "retoc"
